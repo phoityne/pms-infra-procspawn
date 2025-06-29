@@ -18,7 +18,6 @@ import Control.Monad.Except
 import qualified Control.Exception.Safe as E
 import System.Exit
 import qualified Data.Text.Encoding as TE
-import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteString as BS
 import Data.Aeson 
 import qualified System.Process as S
@@ -71,6 +70,7 @@ cmd2task = await >>= \case
     errHdl :: String -> ConduitT DM.ProcSpawnCommand (IOTask ()) AppContext ()
     errHdl msg = do
       $logWarnS DM._LOGTAG $ T.pack $ "cmd2task: exception occurred. skip. " ++ msg
+      lift $ errorToolsCallResponse $ "cmd2task: exception occurred. skip. " ++ msg
       cmd2task
 
     go :: DM.ProcSpawnCommand -> AppContext (IOTask ())
@@ -103,43 +103,6 @@ sink = await >>= \case
       $logDebugS DM._LOGTAG "sink: end async."
       return ()
 
----------------------------------------------------------------------------------
--- |
---
-toolsCallResponse :: STM.TQueue DM.McpResponse
-                  -> DM.JsonRpcRequest
-                  -> ExitCode
-                  -> String
-                  -> String
-                  -> IO ()
-toolsCallResponse resQ jsonRpc code outStr errStr = do
-  let content = [ DM.McpToolsCallResponseResultContent "text" outStr
-                , DM.McpToolsCallResponseResultContent "text" errStr
-                ]
-      result = DM.McpToolsCallResponseResult {
-                  DM._contentMcpToolsCallResponseResult = content
-                , DM._isErrorMcpToolsCallResponseResult = (ExitSuccess /= code)
-                }
-      resDat = DM.McpToolsCallResponseData jsonRpc result
-      res = DM.McpToolsCallResponse resDat
-
-  STM.atomically $ STM.writeTQueue resQ res
-
--- |
---
-errorToolsCallResponse :: String -> AppContext ()
-errorToolsCallResponse errStr = do
-  jsonRpc <- view jsonrpcAppData <$> ask
-  let content = [ DM.McpToolsCallResponseResultContent "text" errStr ]
-      result = DM.McpToolsCallResponseResult {
-                  DM._contentMcpToolsCallResponseResult = content
-                , DM._isErrorMcpToolsCallResponseResult = True
-                }
-      resDat = DM.McpToolsCallResponseData jsonRpc result
-      res = DM.McpToolsCallResponse resDat
-
-  resQ <- view DM.responseQueueDomainData <$> lift ask
-  liftIOE $ STM.atomically $ STM.writeTQueue resQ res
 
 ---------------------------------------------------------------------------------
 -- |
@@ -159,165 +122,150 @@ echoTask :: STM.TQueue DM.McpResponse -> DM.ProcEchoCommandData -> String -> IOT
 echoTask resQ cmdDat val = flip E.catchAny errHdl $ do
   hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.echoTask run. " ++ val
 
-  response ExitSuccess val ""
+  toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcEchoCommandData) ExitSuccess val ""
 
   hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.echoTask end."
 
   where
     errHdl :: E.SomeException -> IO ()
-    errHdl e = response (ExitFailure 1) "" (show e)
-
-    response :: ExitCode -> String -> String -> IO ()
-    response code outStr errStr = do
-      let jsonRpc = cmdDat^.DM.jsonrpcProcEchoCommandData
-          content = [ DM.McpToolsCallResponseResultContent "text" outStr
-                    , DM.McpToolsCallResponseResultContent "text" errStr
-                    ]
-          result = DM.McpToolsCallResponseResult {
-                      DM._contentMcpToolsCallResponseResult = content
-                    , DM._isErrorMcpToolsCallResponseResult = (ExitSuccess /= code)
-                    }
-          resDat = DM.McpToolsCallResponseData jsonRpc result
-          res = DM.McpToolsCallResponse resDat
-
-      STM.atomically $ STM.writeTQueue resQ res
+    errHdl e = toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcEchoCommandData) (ExitFailure 1) "" (show e)
 
 -- |
 --
 genProcRunTask :: DM.ProcRunCommandData -> AppContext (IOTask ())
-genProcRunTask dat = do
-  let name     = dat^.DM.nameProcRunCommandData
-      argsBS   = DM.unRawJsonByteString $ dat^.DM.argumentsProcRunCommandData
-      tout     = 30 * 1000 * 1000
+genProcRunTask cmdDat = case cmdDat^.DM.nameProcRunCommandData of
+  "proc-spawn" -> genProcSpawn cmdDat
+  "proc-cmd"   -> genProcCMD cmdDat
+  -- "proc-ps" -> genProcPS cmdDat
+  -- "proc-ssh" -> genProcSSH cmdDat
+  -- "proc-telnet" -> genProcTelnet cmdDat
+  x -> throwError $ "genProcRunTask: unsupported command. " ++ x
+
+-- |
+--   
+genProcSpawn :: DM.ProcRunCommandData -> AppContext (IOTask ())
+genProcSpawn cmdDat = do
+  let argsBS   = DM.unRawJsonByteString $ cmdDat^.DM.argumentsProcRunCommandData
+      tout     = DM._TIMEOUT_MICROSEC
 
   prompts <- view DM.promptsDomainData <$> lift ask
   resQ <- view DM.responseQueueDomainData <$> lift ask
   procMVar <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
 
-  (cmdTmp, argsArrayTmp)  <- getCommandArgs name argsBS
+  argsDat <- liftEither $ eitherDecode $ argsBS
+  let argsArrayTmp = maybe [] id (argsDat^.argumentsProcCommandToolParams)
+      cmdTmp = argsDat^.commandProcCommandToolParams
+
   cmd <- liftIOE $ DM.validateCommand cmdTmp
   argsArray <- liftIOE $ DM.validateArgs argsArrayTmp
 
-  $logDebugS DM._LOGTAG $ T.pack $ "genProcRunTask: cmd. " ++ cmd ++ " " ++ show argsArray
- 
-  return $ procRunTask dat resQ procMVar lockTMVar cmd argsArray prompts tout
+  $logDebugS DM._LOGTAG $ T.pack $ "genProcSpawn: cmd. " ++ cmd ++ " " ++ show argsArray
 
-  where
-    -- | Get command and arguments from the given name and arguments.
-    getCommandArgs :: String -> BL.ByteString -> AppContext (String, [String])
-    getCommandArgs "proc-spawn" argsBS = do
-      argsDat <- liftEither $ eitherDecode $ argsBS
-      let argsArray = maybe [] id (argsDat^.argumentsProcCommandToolParams)
-          cmd = argsDat^.commandProcCommandToolParams
-      return (cmd, argsArray)
-    getCommandArgs x _ = throwError $ "getCommand: unsupported command. " ++ x
-
+  return $ procSpawnTask cmdDat resQ procMVar lockTMVar cmd argsArray prompts tout
 
 -- |
 --   
-procRunTask :: DM.ProcRunCommandData
-            -> STM.TQueue DM.McpResponse
-            -> STM.TMVar (Maybe ProcData)
-            -> STM.TMVar ()
-            -> String
-            -> [String]
-            -> [String]
-            -> Int
-            -> IOTask ()
-procRunTask cmdDat resQ procVar lockTMVar cmd args prompts tout = do
-  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procRunTask start. "
+procSpawnTask :: DM.ProcRunCommandData
+              -> STM.TQueue DM.McpResponse
+              -> STM.TMVar (Maybe ProcData)
+              -> STM.TMVar ()
+              -> String
+              -> [String]
+              -> [String]
+              -> Int
+              -> IOTask ()
+procSpawnTask cmdDat resQ procVar lockTMVar cmd args prompts tout = do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procSpawnTask start. "
 
   STM.atomically (STM.takeTMVar procVar) >>= \case
     Just p -> do
       STM.atomically $ STM.putTMVar procVar $ Just p
-      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.work.ptyConnectTask: pms is already connected."
-      response (ExitFailure 1) "" "process is already running."
-    Nothing -> E.catchAny runProc errHdl
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.procSpawnTask: pms is already connected."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is already running."
+    Nothing -> flip E.catchAny errHdl $ runProc procVar cmd args
 
   STM.atomically (STM.readTMVar procVar) >>= \case
     Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
-      Left res -> response ExitSuccess (maybe "Nothing" id res) ""
-      Right _  -> response (ExitFailure 1) "" "timeout occurred."
+      Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
+      Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
     Nothing -> do
-      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.work.ptyConnectTask: unexpected. proc not found."
-      response (ExitFailure 1) "" "unexpected. proc not found."
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.procSpawnTask: unexpected. proc not found."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "unexpected. proc not found."
 
-  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procRunTask end."
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procSpawnTask end."
 
   where
     errHdl :: E.SomeException -> IO ()
     errHdl e = do
       STM.atomically $ STM.putTMVar procVar Nothing
-      hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procRunTask.runProc: exception occurred. " ++ show e
-      response (ExitFailure 1) "" (show e)
+      hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procRunTask: exception occurred. " ++ show e
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
 
-    runProc :: IO ()
-    runProc = do
-      hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procRunTask.runProc start."
-      (fromPmsHandle, toProcHandle) <- S.createPipe
-      (fromProcHandle, toPmsHandle) <- S.createPipe
-      let cwd = Nothing
-          runEnvs = Nothing
-{-
-      osEnc <- mkTextEncoding "UTF-8//TRANSLIT"
-
-      let runEnvs = Nothing
-          bufMode = S.NoBuffering
-      --let bufMode = S.BlockBuffering $ Just 1024
-
-      S.hSetBuffering toPhoityneHandle bufMode
-      S.hSetEncoding toPhoityneHandle osEnc
-      S.hSetNewlineMode toPhoityneHandle $ S.NewlineMode S.CRLF S.LF
-      --S.hSetBinaryMode toPhoityneHandle True
-
-      S.hSetBuffering fromPhoityneHandle bufMode
-      S.hSetEncoding fromPhoityneHandle  S.utf8
-      S.hSetNewlineMode fromPhoityneHandle $ S.NewlineMode S.LF S.LF
-      --S.hSetBinaryMode fromPhoityneHandle True
-
-      S.hSetBuffering toGHCiHandle bufMode
-      S.hSetEncoding toGHCiHandle S.utf8
-      S.hSetNewlineMode toGHCiHandle $ S.NewlineMode S.LF S.LF
-      --S.hSetBinaryMode toGHCiHandle True
-
-      S.hSetBuffering fromGHCiHandle bufMode
-      S.hSetEncoding fromGHCiHandle osEnc
-      S.hSetNewlineMode fromGHCiHandle $ S.NewlineMode S.CRLF S.LF
-      --S.hSetBinaryMode fromGHCiHandle True
--}
-      pHdl <- S.runProcess cmd args cwd runEnvs (Just fromPmsHandle) (Just toPmsHandle) (Just toPmsHandle)
-      let procData = ProcData {
-                     _wHdLProcData = toProcHandle
-                   , _rHdlProcData = fromProcHandle
-                   , _eHdlProcData = fromProcHandle
-                   , _pHdlProcData = pHdl
-                   }
-      STM.atomically $ STM.putTMVar procVar (Just procData)
-
-      hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procRunTask.runProc end."
-
-    response :: ExitCode -> String -> String -> IO ()
-    response code outStr errStr = do
-      let jsonRpc = cmdDat^.DM.jsonrpcProcRunCommandData
-          content = [ DM.McpToolsCallResponseResultContent "text" outStr
-                    , DM.McpToolsCallResponseResultContent "text" errStr
-                    ]
-          result = DM.McpToolsCallResponseResult {
-                      DM._contentMcpToolsCallResponseResult = content
-                    , DM._isErrorMcpToolsCallResponseResult = (ExitSuccess /= code)
-                    }
-          resDat = DM.McpToolsCallResponseData jsonRpc result
-          res = DM.McpToolsCallResponse resDat
-
-      STM.atomically $ STM.writeTQueue resQ res
 
 -- |
 --   
-readProc :: ProcData -> IO BS.ByteString
-readProc dat = do
-  let hdl = dat^.rHdlProcData
-  BS.hGetSome hdl 4096
+genProcCMD :: DM.ProcRunCommandData -> AppContext (IOTask ())
+genProcCMD cmdDat = do
+  $logDebugS DM._LOGTAG $ T.pack $ "genProcCMD: called. "
+
+  let tout = DM._TIMEOUT_MICROSEC
+
+  prompts <- view DM.promptsDomainData <$> lift ask
+  resQ <- view DM.responseQueueDomainData <$> lift ask
+  procMVar <- view processAppData <$> ask
+  lockTMVar <- view lockAppData <$> ask
+  
+  return $ genProcCMDTask cmdDat resQ procMVar lockTMVar prompts tout
+
+-- |
+--   
+genProcCMDTask :: DM.ProcRunCommandData
+               -> STM.TQueue DM.McpResponse
+               -> STM.TMVar (Maybe ProcData)
+               -> STM.TMVar ()
+               -> [String]
+               -> Int
+               -> IOTask ()
+genProcCMDTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask start. "
+
+  STM.atomically (STM.takeTMVar procVar) >>= \case
+    Just p -> do
+      STM.atomically $ STM.putTMVar procVar $ Just p
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is already running."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is already running."
+    Nothing -> runProc procVar "cmd" []
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is not started."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is not started."
+    Just procDat -> do
+      let wHdl = procDat^.wHdLProcData
+          msg  =  "chcp 65001 & prompt $P$G$G$G"
+          cmd  = TE.encodeUtf8 $ T.pack $ msg ++ DM._LF
+      
+      hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask writeProc : " ++ BS8.unpack cmd
+      BS.hPut wHdl cmd
+      hFlush wHdl
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+      Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
+      Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.genProcCMDTask: unexpected. proc not found."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "unexpected. proc not found."
+
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask end."
+
+  where
+    errHdl :: E.SomeException -> IO ()
+    errHdl e = do
+      STM.atomically $ STM.putTMVar procVar Nothing
+      hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: exception occurred. " ++ show e
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
 
 
 -- |
