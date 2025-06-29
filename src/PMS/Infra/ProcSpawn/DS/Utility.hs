@@ -12,6 +12,8 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import qualified Control.Concurrent.STM as STM
 import qualified System.Process as S
+-- import qualified System.IO as S
+-- import qualified System.Environment as S
 import qualified Data.ByteString as BS
 
 import qualified PMS.Domain.Model.DM.Type as DM
@@ -86,6 +88,13 @@ runProc procVar cmd args = do
   (fromProcHandle, toPmsHandle) <- S.createPipe
   let cwd = Nothing
       runEnvs = Nothing
+
+--  osEnc <- mkTextEncoding "UTF-8//TRANSLIT"
+--  S.hSetEncoding toPmsHandle osEnc
+--  S.hSetEncoding fromPmsHandle S.utf8
+--  S.hSetEncoding toProcHandle S.utf8
+--  S.hSetEncoding fromProcHandle osEnc
+
 {-
   osEnc <- mkTextEncoding "UTF-8//TRANSLIT"
 

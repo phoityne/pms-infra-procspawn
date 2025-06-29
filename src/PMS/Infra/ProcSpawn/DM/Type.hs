@@ -58,17 +58,17 @@ type IOTask = IO
 --------------------------------------------------------------------------------------------
 -- |
 --
-data StringToolParams =
-  StringToolParams {
-    _argumentsStringToolParams :: String
+data ProcStringToolParams =
+  ProcStringToolParams {
+    _argumentsProcStringToolParams :: String
   } deriving (Show, Read, Eq)
 
-$(deriveJSON defaultOptions {fieldLabelModifier = DM.dropDataName "StringToolParams", omitNothingFields = True} ''StringToolParams)
-makeLenses ''StringToolParams
+$(deriveJSON defaultOptions {fieldLabelModifier = DM.dropDataName "ProcStringToolParams", omitNothingFields = True} ''ProcStringToolParams)
+makeLenses ''ProcStringToolParams
 
-instance Default StringToolParams where
-  def = StringToolParams {
-        _argumentsStringToolParams = def
+instance Default ProcStringToolParams where
+  def = ProcStringToolParams {
+        _argumentsProcStringToolParams = def
       }
 
 
@@ -87,4 +87,19 @@ instance Default ProcCommandToolParams where
   def = ProcCommandToolParams {
         _commandProcCommandToolParams   = def
       , _argumentsProcCommandToolParams = def
+      }
+
+-- |
+--
+data ProcStringArrayToolParams =
+  ProcStringArrayToolParams {
+    _argumentsProcStringArrayToolParams :: [String]
+  } deriving (Show, Read, Eq)
+
+$(deriveJSON defaultOptions {fieldLabelModifier = DM.dropDataName "ProcStringArrayToolParams", omitNothingFields = True} ''ProcStringArrayToolParams)
+makeLenses ''ProcStringArrayToolParams
+
+instance Default ProcStringArrayToolParams where
+  def = ProcStringArrayToolParams {
+        _argumentsProcStringArrayToolParams = def
       }

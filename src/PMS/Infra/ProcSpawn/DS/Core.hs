@@ -22,6 +22,7 @@ import qualified Data.ByteString as BS
 import Data.Aeson 
 import qualified System.Process as S
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.ByteString.Lazy.Char8 as BL
 
 import qualified PMS.Domain.Model.DS.Utility as DM
 import qualified PMS.Domain.Model.DM.Type as DM
@@ -134,18 +135,20 @@ echoTask resQ cmdDat val = flip E.catchAny errHdl $ do
 --
 genProcRunTask :: DM.ProcRunCommandData -> AppContext (IOTask ())
 genProcRunTask cmdDat = case cmdDat^.DM.nameProcRunCommandData of
-  "proc-spawn" -> genProcSpawn cmdDat
-  "proc-cmd"   -> genProcCMD cmdDat
-  -- "proc-ps" -> genProcPS cmdDat
-  -- "proc-ssh" -> genProcSSH cmdDat
-  -- "proc-telnet" -> genProcTelnet cmdDat
+  "proc-spawn"  -> genProcSpawn cmdDat
+  "proc-ssh"    -> genProcSpawn cmdDat
+  "proc-telnet" -> genProcTelnet cmdDat
+  "proc-cmd"    -> genProcCMD cmdDat
+  "proc-ps"     -> genProcPS cmdDat
   x -> throwError $ "genProcRunTask: unsupported command. " ++ x
+
 
 -- |
 --   
 genProcSpawn :: DM.ProcRunCommandData -> AppContext (IOTask ())
 genProcSpawn cmdDat = do
-  let argsBS   = DM.unRawJsonByteString $ cmdDat^.DM.argumentsProcRunCommandData
+  let name     = cmdDat^.DM.nameProcRunCommandData
+      argsBS   = DM.unRawJsonByteString $ cmdDat^.DM.argumentsProcRunCommandData
       tout     = DM._TIMEOUT_MICROSEC
 
   prompts <- view DM.promptsDomainData <$> lift ask
@@ -153,16 +156,36 @@ genProcSpawn cmdDat = do
   procMVar <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
 
-  argsDat <- liftEither $ eitherDecode $ argsBS
-  let argsArrayTmp = maybe [] id (argsDat^.argumentsProcCommandToolParams)
-      cmdTmp = argsDat^.commandProcCommandToolParams
-
+  (cmdTmp, argsArrayTmp)  <- getCommandArgs name argsBS
   cmd <- liftIOE $ DM.validateCommand cmdTmp
   argsArray <- liftIOE $ DM.validateArgs argsArrayTmp
 
-  $logDebugS DM._LOGTAG $ T.pack $ "genProcSpawn: cmd. " ++ cmd ++ " " ++ show argsArray
-
+  $logDebugS DM._LOGTAG $ T.pack $ "genProcRunTask: cmd. " ++ cmd ++ " " ++ show argsArray
+ 
   return $ procSpawnTask cmdDat resQ procMVar lockTMVar cmd argsArray prompts tout
+
+  where
+    -- | Get command and arguments from the given name and arguments.
+    getCommandArgs :: String -> BL.ByteString -> AppContext (String, [String])
+    getCommandArgs "proc-spawn" argsBS = do
+      argsDat <- liftEither $ eitherDecode $ argsBS
+      let argsArray = maybe [] id (argsDat^.argumentsProcCommandToolParams)
+          cmd = argsDat^.commandProcCommandToolParams
+      return (cmd, argsArray)
+
+    getCommandArgs "proc-ssh" argsBS = do
+      argsDat <- liftEither $ eitherDecode $ argsBS
+      let argsArray0 = argsDat ^. argumentsProcStringArrayToolParams
+          argsArray = if "-tt" `elem` argsArray0 then argsArray0 else "-tt" : argsArray0
+      return ("ssh", argsArray)
+
+    getCommandArgs "proc-telnet" argsBS = do
+      argsDat <- liftEither $ eitherDecode $ argsBS
+      let argsArray = argsDat^.argumentsProcStringArrayToolParams
+      return ("telnet", argsArray)
+
+    getCommandArgs x _ = throwError $ "getCommandArgs: unsupported command. " ++ x
+
 
 -- |
 --   
@@ -268,6 +291,138 @@ genProcCMDTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errH
       toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
 
 
+
+-- |
+--   
+genProcTelnet :: DM.ProcRunCommandData -> AppContext (IOTask ())
+genProcTelnet cmdDat = do
+  $logDebugS DM._LOGTAG $ T.pack $ "genProcTelnet: called. "
+
+  let tout = DM._TIMEOUT_MICROSEC
+
+  prompts <- view DM.promptsDomainData <$> lift ask
+  resQ <- view DM.responseQueueDomainData <$> lift ask
+  procMVar <- view processAppData <$> ask
+  lockTMVar <- view lockAppData <$> ask
+  
+  return $ genProcTelnetTask cmdDat resQ procMVar lockTMVar prompts tout
+
+
+-- |
+--   
+genProcTelnetTask :: DM.ProcRunCommandData
+               -> STM.TQueue DM.McpResponse
+               -> STM.TMVar (Maybe ProcData)
+               -> STM.TMVar ()
+               -> [String]
+               -> Int
+               -> IOTask ()
+genProcTelnetTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask start. "
+
+  STM.atomically (STM.takeTMVar procVar) >>= \case
+    Just p -> do
+      STM.atomically $ STM.putTMVar procVar $ Just p
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is already running."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is already running."
+    Nothing -> runProc procVar "telnet" ["172.16.0.18"]
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is not started."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is not started."
+    Just procDat -> do
+      let wHdl = procDat^.wHdLProcData
+          msg  =  "phoityne"
+          cmd  = TE.encodeUtf8 $ T.pack $ msg ++ DM._LF
+      
+      hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask username : " ++ BS8.unpack cmd
+      BS.hPut wHdl cmd
+      hFlush wHdl
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is not started."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: process is not started."
+    Just procDat -> do
+      let wHdl = procDat^.wHdLProcData
+          msg  =  "1qaz2wsx"
+          cmd  = TE.encodeUtf8 $ T.pack $ msg ++ DM._LF
+      
+      hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask password : " ++ BS8.unpack cmd
+      BS.hPut wHdl cmd
+      hFlush wHdl
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+      Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
+      Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.genProcTelnetTask: unexpected. proc not found."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "unexpected. proc not found."
+
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask end."
+
+  where
+    errHdl :: E.SomeException -> IO ()
+    errHdl e = do
+      STM.atomically $ STM.putTMVar procVar Nothing
+      hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcTelnetTask: exception occurred. " ++ show e
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
+
+
+-- |
+--   
+genProcPS :: DM.ProcRunCommandData -> AppContext (IOTask ())
+genProcPS cmdDat = do
+  $logDebugS DM._LOGTAG $ T.pack $ "genProcPS: called. "
+
+  let tout = DM._TIMEOUT_MICROSEC
+
+  prompts <- view DM.promptsDomainData <$> lift ask
+  resQ <- view DM.responseQueueDomainData <$> lift ask
+  procMVar <- view processAppData <$> ask
+  lockTMVar <- view lockAppData <$> ask
+  
+  return $ genProcPSTask cmdDat resQ procMVar lockTMVar prompts tout
+
+-- |
+--   
+genProcPSTask :: DM.ProcRunCommandData
+               -> STM.TQueue DM.McpResponse
+               -> STM.TMVar (Maybe ProcData)
+               -> STM.TMVar ()
+               -> [String]
+               -> Int
+               -> IOTask ()
+genProcPSTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask start. "
+  let initCmd = "chcp 65001; $OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; function prompt { \"PS $((Get-Location).Path)>>>\" }"
+
+  STM.atomically (STM.takeTMVar procVar) >>= \case
+    Just p -> do
+      STM.atomically $ STM.putTMVar procVar $ Just p
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: process is already running."
+      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: process is already running."
+    Nothing -> runProc procVar "powershell" ["-NoLogo", "-NoExit", "-Command", initCmd]
+
+  STM.atomically (STM.readTMVar procVar) >>= \case
+    Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+      Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
+      Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.genProcPSTask: unexpected. proc not found."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "unexpected. proc not found."
+
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask end."
+
+  where
+    errHdl :: E.SomeException -> IO ()
+    errHdl e = do
+      STM.atomically $ STM.putTMVar procVar Nothing
+      hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: exception occurred. " ++ show e
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
+
 -- |
 --
 genProcTerminateTask :: DM.ProcTerminateCommandData -> AppContext (IOTask ())
@@ -318,7 +473,7 @@ genProcMessageTask cmdData = do
   procTMVar <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
   argsDat <- liftEither $ eitherDecode $ argsBS
-  let args = argsDat^.argumentsStringToolParams
+  let args = argsDat^.argumentsProcStringToolParams
 
   $logDebugS DM._LOGTAG $ T.pack $ "genProcMessageTask: args. " ++ args
   return $ procMessageTask cmdData resQ procTMVar lockTMVar args prompts tout
