@@ -156,33 +156,33 @@ genProcSpawn cmdDat = do
   procMVar <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
 
-  (cmdTmp, argsArrayTmp)  <- getCommandArgs name argsBS
+  (cmdTmp, argsArrayTmp, addPrompts)  <- getCommandArgs name argsBS
   cmd <- liftIOE $ DM.validateCommand cmdTmp
   argsArray <- liftIOE $ DM.validateArgs argsArrayTmp
 
   $logDebugS DM._LOGTAG $ T.pack $ "genProcRunTask: cmd. " ++ cmd ++ " " ++ show argsArray
  
-  return $ procSpawnTask cmdDat resQ procMVar lockTMVar cmd argsArray prompts tout
+  return $ procSpawnTask cmdDat resQ procMVar lockTMVar cmd argsArray (prompts++addPrompts) tout
 
   where
     -- | Get command and arguments from the given name and arguments.
-    getCommandArgs :: String -> BL.ByteString -> AppContext (String, [String])
+    getCommandArgs :: String -> BL.ByteString -> AppContext (String, [String], [String])
     getCommandArgs "proc-spawn" argsBS = do
       argsDat <- liftEither $ eitherDecode $ argsBS
       let argsArray = maybe [] id (argsDat^.argumentsProcCommandToolParams)
           cmd = argsDat^.commandProcCommandToolParams
-      return (cmd, argsArray)
+      return (cmd, argsArray, [])
 
     getCommandArgs "proc-ssh" argsBS = do
       argsDat <- liftEither $ eitherDecode $ argsBS
       let argsArray0 = argsDat ^. argumentsProcStringArrayToolParams
           argsArray = if "-tt" `elem` argsArray0 then argsArray0 else "-tt" : argsArray0
-      return ("ssh", argsArray)
+      return ("ssh", argsArray, [")?", "password:"])
 
     getCommandArgs "proc-telnet" argsBS = do
       argsDat <- liftEither $ eitherDecode $ argsBS
       let argsArray = argsDat^.argumentsProcStringArrayToolParams
-      return ("telnet", argsArray)
+      return ("telnet", argsArray, ["login:", "Password:"])
 
     getCommandArgs x _ = throwError $ "getCommandArgs: unsupported command. " ++ x
 
