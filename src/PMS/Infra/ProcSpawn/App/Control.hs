@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+
 module PMS.Infra.ProcSpawn.App.Control where
 
 import System.IO

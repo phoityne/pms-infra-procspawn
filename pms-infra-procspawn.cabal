@@ -1,4 +1,4 @@
-cabal-version:      3.12
+cabal-version: >= 1.2
 -- The cabal-version field refers to the version of the .cabal specification,
 -- and can be different from the cabal-install (the tool) version and the
 -- Cabal (the library) version you are using. As such, the Cabal (the library)
@@ -96,15 +96,15 @@ library
     hs-source-dirs:   src
 
     -- Base language which the package is written in.
-    default-language: GHC2021
-    default-extensions:  LambdaCase
+    -- default-language: GHC2021
+    -- default-extensions:  LambdaCase
 
 test-suite pms-infra-procspawn-test
     -- Import common warning flags.
     ghc-options: -Wall -threaded
 
     -- Base language which the package is written in.
-    default-language: GHC2021
+    -- default-language: GHC2021
 
     -- Modules included in this executable, other than Main.
     other-modules:    PMS.Infra.ProcSpawn.App.ControlSpec
