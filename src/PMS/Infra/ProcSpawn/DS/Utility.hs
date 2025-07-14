@@ -65,9 +65,8 @@ toolsCallResponse resQ jsonRpc code outStr errStr = do
 
 -- |
 --
-errorToolsCallResponse :: String -> AppContext ()
-errorToolsCallResponse errStr = do
-  jsonRpc <- view jsonrpcAppData <$> ask
+errorToolsCallResponse :: DM.JsonRpcRequest -> String -> AppContext ()
+errorToolsCallResponse jsonRpc errStr = do
   let content = [ DM.McpToolsCallResponseResultContent "text" errStr ]
       result = DM.McpToolsCallResponseResult {
                   DM._contentMcpToolsCallResponseResult = content

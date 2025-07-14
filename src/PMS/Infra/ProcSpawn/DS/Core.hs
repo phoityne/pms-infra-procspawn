@@ -62,17 +62,18 @@ src = lift go >>= yield >> src
 --
 cmd2task :: ConduitT DM.ProcSpawnCommand (IOTask ()) AppContext ()
 cmd2task = await >>= \case
-  Just cmd -> flip catchError errHdl $ do
+  Just cmd -> flip catchError (errHdl cmd) $ do
     lift (go cmd) >>= yield >> cmd2task
   Nothing -> do
     $logWarnS DM._LOGTAG "cmd2task: await returns nothing. skip."
     cmd2task
 
   where
-    errHdl :: String -> ConduitT DM.ProcSpawnCommand (IOTask ()) AppContext ()
-    errHdl msg = do
+    errHdl :: DM.ProcSpawnCommand -> String -> ConduitT DM.ProcSpawnCommand (IOTask ()) AppContext ()
+    errHdl procCmd msg = do
+      let jsonrpc = DM.getJsonRpcProcSpawnCommand procCmd
       $logWarnS DM._LOGTAG $ T.pack $ "cmd2task: exception occurred. skip. " ++ msg
-      lift $ errorToolsCallResponse $ "cmd2task: exception occurred. skip. " ++ msg
+      lift $ errorToolsCallResponse jsonrpc $ "cmd2task: exception occurred. skip. " ++ msg
       cmd2task
 
     go :: DM.ProcSpawnCommand -> AppContext (IOTask ())
