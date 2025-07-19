@@ -140,6 +140,8 @@ genProcRunTask cmdDat = case cmdDat^.DM.nameProcRunCommandData of
   "proc-spawn"  -> genProcSpawn cmdDat
   "proc-ssh"    -> genProcSpawn cmdDat
   "proc-telnet" -> genProcSpawn cmdDat
+  "proc-winpty" -> genProcSpawn cmdDat
+  "proc-plink"  -> genProcSpawn cmdDat
   "proc-cmd"    -> genProcCMD cmdDat
   "proc-ps"     -> genProcPS cmdDat
   x -> throwError $ "genProcRunTask: unsupported command. " ++ x
@@ -187,7 +189,23 @@ genProcSpawn cmdDat = do
     getCommandArgs "proc-telnet" argsBS = do
       argsDat <- liftEither $ eitherDecode $ argsBS
       let argsArray = argsDat^.argumentsProcStringArrayToolParams
-      return ("telnet", argsArray, ["login:", "Password:"])
+          winpty = "plink"
+--          winpty = "C:\\Progra~1\\Git\\usr\\bin\\winpty.exe"
+      return (winpty, "-telnet":argsArray, ["login:", "Password:"])
+
+    getCommandArgs "proc-winpty" argsBS = do
+      argsDat <- liftEither $ eitherDecode $ argsBS
+      let argsArray = argsDat^.argumentsProcStringArrayToolParams
+          winpty = "winpty"
+          -- winpty = "C:\\Progra~1\\Git\\usr\\bin\\winpty.exe"
+      return (winpty, argsArray, ["login:", "Password:", ")?", "password:"])
+
+    getCommandArgs "proc-plink" argsBS = do
+      argsDat <- liftEither $ eitherDecode $ argsBS
+      let argsArray = argsDat^.argumentsProcStringArrayToolParams
+          plink = "plink"
+          -- plink = "C:\\Progra~1\\PuTTY\\plink.exe"
+      return (plink, argsArray, ["login:", "Password:", ")?", "password:"])
 
     getCommandArgs x _ = throwError $ "getCommandArgs: unsupported command. " ++ x
 
