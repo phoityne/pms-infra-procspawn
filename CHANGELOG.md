@@ -1,5 +1,9 @@
 # Revision history for pms-infra-procspawn
 
+## 0.0.4.0 -- 2025-07-27
+
+* Fixed resources templates.
+
 ## 0.0.3.0 -- 2025-07-20
 
 * Added proc tool.
