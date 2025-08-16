@@ -465,5 +465,5 @@ procMessageTask cmdDat resQ procTMVar lockTMVar args prompts tout = flip E.catch
       hFlush wHdl
 
       race (DM.expect lockTMVar (readProc pDat) prompts) (CC.threadDelay tout) >>= \case
-        Left res -> toolsCallResponse resQ jsonRpc ExitSuccess (maybe "Nothing" id res) ""
+        Left res -> toolsCallResponse resQ jsonRpc ExitSuccess (maybe "expect running. skip." id res) ""
         Right _  -> toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "timeout occurred."

@@ -113,7 +113,10 @@ runProc procVar cmd args addEnv = do
 --   
 readProc :: ProcData -> IO BS.ByteString
 readProc dat = do
-   let hdl = dat^.rHdlProcData
-   BS.hGetSome hdl 1024
-
-  
+  let hdl = dat^.rHdlProcData
+      timeoutMillis = 5000
+  ready <- hWaitForInput hdl timeoutMillis
+  if ready
+    then BS.hGetSome hdl 1024
+    else E.throwString $ "readProc: timeout waiting for input"
+    

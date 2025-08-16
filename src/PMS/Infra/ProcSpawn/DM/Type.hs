@@ -31,7 +31,6 @@ makeLenses ''ProcData
 data AppData = AppData {
                _processAppData :: STM.TMVar (Maybe ProcData)
              , _lockAppData :: STM.TMVar ()
-             , _jsonrpcAppData :: DM.JsonRpcRequest
              }
 
 makeLenses ''AppData
@@ -43,7 +42,6 @@ defaultAppData = do
   return AppData {
            _processAppData = mgrVar
          , _lockAppData = lock
-         , _jsonrpcAppData = def
          }
 
 -- |
