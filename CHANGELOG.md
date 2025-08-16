@@ -1,5 +1,9 @@
 # Revision history for pms-infra-procspawn
 
+## 0.0.5.0 -- 2025-08-17
+
+* Fixed proc-message.
+
 ## 0.0.4.0 -- 2025-07-27
 
 * Fixed resources templates.
