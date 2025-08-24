@@ -228,7 +228,7 @@ procSpawnTask cmdDat resQ procVar lockTMVar cmd args addEnv prompts tout = do
   STM.atomically (STM.takeTMVar procVar) >>= \case
     Just p -> do
       STM.atomically $ STM.putTMVar procVar $ Just p
-      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.procSpawnTask: pms is already connected."
+      hPutStrLn stderr "[ERROR] PMS.Infrastructure.DS.Core.procSpawnTask: process is already running."
       toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is already running."
     Nothing -> do
       flip E.catchAny errHdl $ runProc procVar cmd args addEnv
@@ -283,13 +283,13 @@ genProcCMDTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errH
     Just p -> do
       STM.atomically $ STM.putTMVar procVar $ Just p
       hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is already running."
-      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is already running."
-    Nothing -> runProc procVar "cmd" [] []
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is already running."
+    Nothing -> flip E.catchAny errHdl $ runProc procVar "cmd" [] []
 
   STM.atomically (STM.readTMVar procVar) >>= \case
     Nothing -> do
       hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is not started."
-      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcCMDTask: process is not started."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is not started."
     Just procDat -> do
       let wHdl = procDat^.wHdLProcData
           msg  =  "chcp 65001 & prompt $P$G$G$G"
@@ -349,7 +349,7 @@ genProcPSTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHd
     Just p -> do
       STM.atomically $ STM.putTMVar procVar $ Just p
       hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: process is already running."
-      E.throwString "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: process is already running."
+      toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is already running."
     Nothing -> runProc procVar "powershell" ["-NoLogo", "-NoExit", "-Command", initCmd] []
 
   STM.atomically (STM.readTMVar procVar) >>= \case

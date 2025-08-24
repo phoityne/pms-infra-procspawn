@@ -1,5 +1,9 @@
 # Revision history for pms-infra-procspawn
 
+## 0.0.6.0 -- 2025-08-24
+
+* Fixed exception handle.
+
 ## 0.0.5.0 -- 2025-08-17
 
 * Fixed proc-message.
