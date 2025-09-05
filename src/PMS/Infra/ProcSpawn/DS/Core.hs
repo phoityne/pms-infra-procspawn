@@ -158,12 +158,14 @@ genProcSpawn cmdDat = do
 
   prompts   <- view DM.promptsDomainData <$> lift ask
   resQ      <- view DM.responseQueueDomainData <$> lift ask
+  invalidChars <- view DM.invalidCharsDomainData <$> lift ask
+  invalidCmds <- view DM.invalidCmdsDomainData <$> lift ask
   procMVar  <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
 
   (cmdTmp, argsArrayTmp, addPrompts)  <- getCommandArgs name argsBS
-  cmd <- liftIOE $ DM.validateCommand cmdTmp
-  argsArray <- liftIOE $ DM.validateArgs argsArrayTmp
+  cmd <- liftIOE $ DM.validateCommand invalidChars invalidCmds cmdTmp
+  argsArray <- liftIOE $ DM.validateArgs invalidChars argsArrayTmp
 
   $logDebugS DM._LOGTAG $ T.pack $ "genProcRunTask: cmd. " ++ cmd ++ " " ++ show argsArray
  
@@ -416,13 +418,15 @@ genProcMessageTask cmdData = do
       tout = 30 * 1000 * 1000
   prompts <- view DM.promptsDomainData <$> lift ask
   resQ <- view DM.responseQueueDomainData <$> lift ask
+  invalidChars <- view DM.invalidCharsDomainData <$> lift ask
+  invalidCmds <- view DM.invalidCmdsDomainData <$> lift ask
   procTMVar <- view processAppData <$> ask
   lockTMVar <- view lockAppData <$> ask
   argsDat <- liftEither $ eitherDecode $ argsBS
   let args = argsDat^.argumentsProcStringToolParams
 
   $logDebugS DM._LOGTAG $ T.pack $ "genProcMessageTask: args. " ++ args
-  return $ procMessageTask cmdData resQ procTMVar lockTMVar args prompts tout
+  return $ procMessageTask cmdData resQ procTMVar lockTMVar args prompts tout invalidChars invalidCmds
 
 -- |
 --
@@ -433,8 +437,10 @@ procMessageTask :: DM.ProcMessageCommandData
                 -> String  -- arguments line
                 -> [String]  -- prompt list
                 -> Int       -- timeout microsec
+                -> [String]  -- invalidChars
+                -> [String]  -- invalidCmds
                 -> IOTask ()
-procMessageTask cmdDat resQ procTMVar lockTMVar args prompts tout = flip E.catchAny errHdl $ do
+procMessageTask cmdDat resQ procTMVar lockTMVar args prompts tout invalidChars invalidCmds = flip E.catchAny errHdl $ do
   hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procMessageTask run. " ++ args
     
   STM.atomically (STM.readTMVar procTMVar) >>= \case
@@ -456,7 +462,7 @@ procMessageTask cmdDat resQ procTMVar lockTMVar args prompts tout = flip E.catch
     go pDat = do
       let wHdl = pDat^.wHdLProcData
 
-      msg <- DM.validateMessage args
+      msg <- DM.validateMessage invalidChars invalidCmds args
       let cmd = TE.encodeUtf8 $ T.pack $ msg ++ DM._LF
 
       hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procMessageTask writeProc : " ++ BS8.unpack cmd
