@@ -5,6 +5,7 @@
 module PMS.Infra.ProcSpawn.DS.Core where
 
 import System.IO
+import System.Environment 
 import Control.Monad.Logger
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
@@ -21,6 +22,7 @@ import System.Exit
 import qualified Data.Text.Encoding as TE
 import qualified Data.ByteString as BS
 import Data.Aeson 
+import Data.List
 import qualified System.Process as S
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy.Char8 as BL
@@ -346,13 +348,13 @@ genProcPSTask :: DM.ProcRunCommandData
 genProcPSTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHdl $ do
   hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask start. "
   let initCmd = "chcp 65001; $OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; function prompt { \"PS $((Get-Location).Path)>>>\" }"
-
+  env <- addPathsToEnv ["C:\\Windows\\System32"]
   STM.atomically (STM.takeTMVar procVar) >>= \case
     Just p -> do
       STM.atomically $ STM.putTMVar procVar $ Just p
       hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: process is already running."
       toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "process is already running."
-    Nothing -> runProc procVar "powershell" ["-NoLogo", "-NoExit", "-Command", initCmd] []
+    Nothing -> runProc procVar "powershell" ["-NoLogo", "-NoExit", "-Command", initCmd] env
 
   STM.atomically (STM.readTMVar procVar) >>= \case
     Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
@@ -370,6 +372,14 @@ genProcPSTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHd
       STM.atomically $ STM.putTMVar procVar Nothing
       hPutStrLn stderr $ "[ERROR] PMS.Infra.ProcSpawn.DS.Core.genProcPSTask: exception occurred. " ++ show e
       toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" (show e)
+
+    addPathsToEnv :: [FilePath] -> IO [(String, String)]
+    addPathsToEnv extraPaths = do
+        env <- getEnvironment
+        let sep = ";"  -- Windows用。Unix系なら ":"
+            oldPath = maybe "" id (lookup "PATH" env)
+            newPath = intercalate sep extraPaths ++ (if null oldPath then "" else sep ++ oldPath)
+        return $ ("PATH", newPath) : filter ((/= "PATH") . fst) env
 
 -- |
 --
