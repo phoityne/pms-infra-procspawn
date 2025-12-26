@@ -89,7 +89,7 @@ runProc procVar cmd args addEnv = do
 
   (fromPtyHandle, toProcHandle) <- S.createPipe
   (fromProcHandle, toPtyHandle) <- S.createPipe
-  (fromProcEHandle, toPtyEHandle) <- S.createPipe
+  -- (fromProcEHandle, toPtyEHandle) <- S.createPipe
 
   baseEnv <- Env.getEnvironment
   let cwd = Nothing
@@ -130,8 +130,7 @@ readProc dat = do
 --   
 readProc2 :: ProcData -> IO BS.ByteString
 readProc2 dat = do
-  let timeoutMillis = 5000
-      rHdl = dat^.rHdlProcData
+  let rHdl = dat^.rHdlProcData
       eHdl = dat^.eHdlProcData
 
   readProcHandle eHdl 1000 >>= \case
@@ -161,8 +160,7 @@ readProc2 dat = do
 --   
 readProc3 :: ProcData -> IO BS.ByteString
 readProc3 dat = do
-  let timeoutMillis = 25000
-      rHdl = dat^.rHdlProcData
+  let rHdl = dat^.rHdlProcData
       eHdl = dat^.eHdlProcData
 
   hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.readProc start race."
