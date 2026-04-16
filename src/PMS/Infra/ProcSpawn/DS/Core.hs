@@ -85,8 +85,8 @@ cmd2task = await >>= \case
     go (DM.ProcRunCommand dat)       = genProcRunTask dat
     go (DM.ProcTerminateCommand dat) = genProcTerminateTask dat
     go (DM.ProcMessageCommand dat)   = genProcMessageTask dat
-    go (DM.ProcAsyncReadCommand dat)  = genProcAsyncReadTask dat
-    go (DM.ProcAsyncWriteCommand dat) = genProcAsyncWriteTask dat
+    go (DM.ProcReadCommand dat)  = genProcReadTask dat
+    go (DM.ProcWriteCommand dat) = genProcWriteTask dat
 
 ---------------------------------------------------------------------------------
 -- |
@@ -426,24 +426,24 @@ procTerminateTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
 
 -- |
 --
-genProcAsyncReadTask :: DM.ProcAsyncReadCommandData -> AppContext (IOTask ())
-genProcAsyncReadTask cmdData = do
+genProcReadTask :: DM.ProcReadCommandData -> AppContext (IOTask ())
+genProcReadTask cmdData = do
   resQ <- view DM.responseQueueDomainData <$> lift ask
   procTMVar <- view processAppData <$> ask
-  return $ procAsyncReadTask cmdData resQ procTMVar
+  return $ procReadTask cmdData resQ procTMVar
 
 -- |
 --
-procAsyncReadTask :: DM.ProcAsyncReadCommandData
+procReadTask :: DM.ProcReadCommandData
                   -> STM.TQueue DM.McpResponse
                   -> STM.TMVar (Maybe ProcData)
                   -> IOTask ()
-procAsyncReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
-  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procAsyncReadTask run."
+procReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procReadTask run."
   
   STM.atomically (STM.readTMVar procTMVar) >>= \case
     Nothing -> do
-      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procAsyncReadTask: process is not started."
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procReadTask: process is not started."
       toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
     Just p -> do
       let rHdl = p^.rHdlProcData
@@ -462,37 +462,37 @@ procAsyncReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
         else toolsCallResponse resQ jsonRpc ExitSuccess "" ""
 
   where
-    jsonRpc = cmdDat^.DM.jsonrpcProcAsyncReadCommandData
+    jsonRpc = cmdDat^.DM.jsonrpcProcReadCommandData
     errHdl e = toolsCallResponse resQ jsonRpc (ExitFailure 1) "" (show e)
 
 -- |
 --
-genProcAsyncWriteTask :: DM.ProcAsyncWriteCommandData -> AppContext (IOTask ())
-genProcAsyncWriteTask cmdData = do
-  let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcAsyncWriteCommandData
+genProcWriteTask :: DM.ProcWriteCommandData -> AppContext (IOTask ())
+genProcWriteTask cmdData = do
+  let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcWriteCommandData
   resQ <- view DM.responseQueueDomainData <$> lift ask
   procTMVar <- view processAppData <$> ask
   invalidChars <- view DM.invalidCharsDomainData <$> lift ask
   invalidCmds <- view DM.invalidCmdsDomainData <$> lift ask
   argsDat <- liftEither $ eitherDecode $ argsBS
   let args = argsDat^.argumentsProcStringToolParams
-  return $ procAsyncWriteTask cmdData resQ procTMVar args invalidChars invalidCmds
+  return $ procWriteTask cmdData resQ procTMVar args invalidChars invalidCmds
 
 -- |
 --
-procAsyncWriteTask :: DM.ProcAsyncWriteCommandData
+procWriteTask :: DM.ProcWriteCommandData
                    -> STM.TQueue DM.McpResponse
                    -> STM.TMVar (Maybe ProcData)
                    -> String
                    -> [String]
                    -> [String]
                    -> IOTask ()
-procAsyncWriteTask cmdDat resQ procTMVar args invalidChars invalidCmds = flip E.catchAny errHdl $ do
-  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procAsyncWriteTask run. " ++ args
+procWriteTask cmdDat resQ procTMVar args invalidChars invalidCmds = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procWriteTask run. " ++ args
   
   STM.atomically (STM.readTMVar procTMVar) >>= \case
     Nothing -> do
-      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procAsyncWriteTask: process is not started."
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procWriteTask: process is not started."
       toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
     Just p -> do
       let wHdl = p^.wHdLProcData
@@ -503,7 +503,7 @@ procAsyncWriteTask cmdDat resQ procTMVar args invalidChars invalidCmds = flip E.
       toolsCallResponse resQ jsonRpc ExitSuccess "success" ""
 
   where
-    jsonRpc = cmdDat^.DM.jsonrpcProcAsyncWriteCommandData
+    jsonRpc = cmdDat^.DM.jsonrpcProcWriteCommandData
     errHdl e = toolsCallResponse resQ jsonRpc (ExitFailure 1) "" (show e)
 -- |
 --
