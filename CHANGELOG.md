@@ -1,5 +1,9 @@
 # Revision history for pms-infra-procspawn
 
+## 0.0.9.0 -- 2026-04-30
+
+* Add async read/write tools.
+
 ## 0.0.8.0 -- 2025-12-31
 
 * Add file system tools.

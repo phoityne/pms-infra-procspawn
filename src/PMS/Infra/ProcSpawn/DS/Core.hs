@@ -1,6 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module PMS.Infra.ProcSpawn.DS.Core where
 
@@ -32,6 +33,7 @@ import qualified PMS.Domain.Model.DM.Type as DM
 import qualified PMS.Domain.Model.DM.Constant as DM
 
 import PMS.Infra.ProcSpawn.DM.Type
+import qualified PMS.Infra.ProcSpawn.DM.Constant as DM_CONST
 import PMS.Infra.ProcSpawn.DS.Utility
 
 
@@ -83,6 +85,8 @@ cmd2task = await >>= \case
     go (DM.ProcRunCommand dat)       = genProcRunTask dat
     go (DM.ProcTerminateCommand dat) = genProcTerminateTask dat
     go (DM.ProcMessageCommand dat)   = genProcMessageTask dat
+    go (DM.ProcAsyncReadCommand dat)  = genProcAsyncReadTask dat
+    go (DM.ProcAsyncWriteCommand dat) = genProcAsyncWriteTask dat
 
 ---------------------------------------------------------------------------------
 -- |
@@ -420,6 +424,87 @@ procTerminateTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
     errHdl e = toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcTerminateCommandData) (ExitFailure 1) "" (show e)
 
 
+-- |
+--
+genProcAsyncReadTask :: DM.ProcAsyncReadCommandData -> AppContext (IOTask ())
+genProcAsyncReadTask cmdData = do
+  resQ <- view DM.responseQueueDomainData <$> lift ask
+  procTMVar <- view processAppData <$> ask
+  return $ procAsyncReadTask cmdData resQ procTMVar
+
+-- |
+--
+procAsyncReadTask :: DM.ProcAsyncReadCommandData
+                  -> STM.TQueue DM.McpResponse
+                  -> STM.TMVar (Maybe ProcData)
+                  -> IOTask ()
+procAsyncReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
+  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procAsyncReadTask run."
+  
+  STM.atomically (STM.readTMVar procTMVar) >>= \case
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procAsyncReadTask: process is not started."
+      toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
+    Just p -> do
+      let rHdl = p^.rHdlProcData
+      -- hGetNonBlocking is not directly in System.IO for Handle, but S.hGetNonBlocking exists in System.Process? No.
+      -- Wait, I need a non-blocking read for Handle.
+      -- System.IO.hGetNonBlocking exists in base? No, it's usually not there.
+      -- Ah, I should use Data.ByteString.hGetNonBlocking? Let me check imports.
+      -- BS.hGetSome is already used in `readProc`. Wait, `readProc` uses `hWaitForInput`.
+      -- I can use `System.IO.hReady`.
+      
+      ready <- hReady rHdl
+      if ready
+        then do
+          out <- BS.hGetSome rHdl DM_CONST._READ_BUFFER_SIZE
+          toolsCallResponse resQ jsonRpc ExitSuccess (BS8.unpack out) ""
+        else toolsCallResponse resQ jsonRpc ExitSuccess "" ""
+
+  where
+    jsonRpc = cmdDat^.DM.jsonrpcProcAsyncReadCommandData
+    errHdl e = toolsCallResponse resQ jsonRpc (ExitFailure 1) "" (show e)
+
+-- |
+--
+genProcAsyncWriteTask :: DM.ProcAsyncWriteCommandData -> AppContext (IOTask ())
+genProcAsyncWriteTask cmdData = do
+  let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcAsyncWriteCommandData
+  resQ <- view DM.responseQueueDomainData <$> lift ask
+  procTMVar <- view processAppData <$> ask
+  invalidChars <- view DM.invalidCharsDomainData <$> lift ask
+  invalidCmds <- view DM.invalidCmdsDomainData <$> lift ask
+  argsDat <- liftEither $ eitherDecode $ argsBS
+  let args = argsDat^.argumentsProcStringToolParams
+  return $ procAsyncWriteTask cmdData resQ procTMVar args invalidChars invalidCmds
+
+-- |
+--
+procAsyncWriteTask :: DM.ProcAsyncWriteCommandData
+                   -> STM.TQueue DM.McpResponse
+                   -> STM.TMVar (Maybe ProcData)
+                   -> String
+                   -> [String]
+                   -> [String]
+                   -> IOTask ()
+procAsyncWriteTask cmdDat resQ procTMVar args invalidChars invalidCmds = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procAsyncWriteTask run. " ++ args
+  
+  STM.atomically (STM.readTMVar procTMVar) >>= \case
+    Nothing -> do
+      hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procAsyncWriteTask: process is not started."
+      toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
+    Just p -> do
+      let wHdl = p^.wHdLProcData
+      msg <- DM.validateMessage invalidChars invalidCmds args
+      let cmd = TE.encodeUtf8 $ T.pack $ msg ++ DM._LF
+      BS.hPut wHdl cmd
+      hFlush wHdl
+      toolsCallResponse resQ jsonRpc ExitSuccess "success" ""
+
+  where
+    jsonRpc = cmdDat^.DM.jsonrpcProcAsyncWriteCommandData
+    errHdl e = toolsCallResponse resQ jsonRpc (ExitFailure 1) "" (show e)
 -- |
 --
 genProcMessageTask :: DM.ProcMessageCommandData -> AppContext (IOTask ())
