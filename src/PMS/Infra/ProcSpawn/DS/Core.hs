@@ -430,16 +430,21 @@ genProcReadTask :: DM.ProcReadCommandData -> AppContext (IOTask ())
 genProcReadTask cmdData = do
   resQ <- view DM.responseQueueDomainData <$> lift ask
   procTMVar <- view processAppData <$> ask
-  return $ procReadTask cmdData resQ procTMVar
+  let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcReadCommandData
+  argsDat <- liftEither $ eitherDecode $ argsBS
+  let size = argsDat^.argumentsProcIntToolParams
+      actualSize = min size DM_CONST._READ_BUFFER_SIZE
+  return $ procReadTask cmdData resQ procTMVar actualSize
 
 -- |
 --
 procReadTask :: DM.ProcReadCommandData
-                  -> STM.TQueue DM.McpResponse
-                  -> STM.TMVar (Maybe ProcData)
-                  -> IOTask ()
-procReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
-  hPutStrLn stderr "[INFO] PMS.Infra.ProcSpawn.DS.Core.procReadTask run."
+             -> STM.TQueue DM.McpResponse
+             -> STM.TMVar (Maybe ProcData)
+             -> Int
+             -> IOTask ()
+procReadTask cmdDat resQ procTMVar actualSize = flip E.catchAny errHdl $ do
+  hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procReadTask run. actualSize: " ++ show actualSize
   
   STM.atomically (STM.readTMVar procTMVar) >>= \case
     Nothing -> do
@@ -447,17 +452,11 @@ procReadTask cmdDat resQ procTMVar = flip E.catchAny errHdl $ do
       toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
     Just p -> do
       let rHdl = p^.rHdlProcData
-      -- hGetNonBlocking is not directly in System.IO for Handle, but S.hGetNonBlocking exists in System.Process? No.
-      -- Wait, I need a non-blocking read for Handle.
-      -- System.IO.hGetNonBlocking exists in base? No, it's usually not there.
-      -- Ah, I should use Data.ByteString.hGetNonBlocking? Let me check imports.
-      -- BS.hGetSome is already used in `readProc`. Wait, `readProc` uses `hWaitForInput`.
-      -- I can use `System.IO.hReady`.
       
       ready <- hReady rHdl
       if ready
         then do
-          out <- BS.hGetSome rHdl DM_CONST._READ_BUFFER_SIZE
+          out <- BS.hGetSome rHdl actualSize
           toolsCallResponse resQ jsonRpc ExitSuccess (BS8.unpack out) ""
         else toolsCallResponse resQ jsonRpc ExitSuccess "" ""
 

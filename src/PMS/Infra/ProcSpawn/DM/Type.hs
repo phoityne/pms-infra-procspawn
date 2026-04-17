@@ -101,3 +101,19 @@ instance Default ProcStringArrayToolParams where
   def = ProcStringArrayToolParams {
         _argumentsProcStringArrayToolParams = def
       }
+
+-- |
+--
+data ProcIntToolParams =
+  ProcIntToolParams {
+    _argumentsProcIntToolParams :: Int
+  } deriving (Show, Read, Eq)
+
+$(deriveJSON defaultOptions {fieldLabelModifier = DM.dropDataName "ProcIntToolParams", omitNothingFields = True} ''ProcIntToolParams)
+makeLenses ''ProcIntToolParams
+
+instance Default ProcIntToolParams where
+  def = ProcIntToolParams {
+        _argumentsProcIntToolParams = def
+      }
+
