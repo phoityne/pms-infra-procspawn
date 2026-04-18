@@ -9,6 +9,6 @@ _LOG_FILE_NAME = "pms-infra-procspawn.log"
 -- |
 --
 _READ_BUFFER_SIZE :: Int
-_READ_BUFFER_SIZE = 1024
+_READ_BUFFER_SIZE = 4096
 
 

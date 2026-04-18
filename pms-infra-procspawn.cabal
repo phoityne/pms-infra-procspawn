@@ -90,6 +90,7 @@ library
                       filepath,
                       aeson,
                       directory,
+                      strip-ansi-escape,
                       pms-domain-model
 
     -- Directories containing source files.

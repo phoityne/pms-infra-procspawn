@@ -21,6 +21,9 @@ import Control.Monad.Except
 import qualified Control.Exception.Safe as E
 import System.Exit
 import qualified Data.Text.Encoding as TE
+import qualified Data.String.AnsiEscapeCodes.Strip.Text as ANSI
+import qualified Data.Text.Encoding.Error as TEE
+
 import qualified Data.ByteString as BS
 import Data.Aeson 
 import Data.List
@@ -159,8 +162,9 @@ genProcSpawn :: DM.ProcRunCommandData -> AppContext (IOTask ())
 genProcSpawn cmdDat = do
   let name     = cmdDat^.DM.nameProcRunCommandData
       argsBS   = DM.unRawJsonByteString $ cmdDat^.DM.argumentsProcRunCommandData
-      tout     = DM._TIMEOUT_MICROSEC
       addEnv   = [("ProgramData", "C:\\ProgramData"), ("SystemRoot", "C:\\Windows")] -- for windows ssh on claude code.
+
+  tout <- view DM.timeoutMicrosecDomainData <$> lift ask
 
   prompts   <- view DM.promptsDomainData <$> lift ask
   resQ      <- view DM.responseQueueDomainData <$> lift ask
@@ -243,7 +247,7 @@ procSpawnTask cmdDat resQ procVar lockTMVar cmd args addEnv prompts tout = do
 
   STM.atomically (STM.readTMVar procVar) >>= \case
     Just p -> do
-      race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+      race (DM.expect lockTMVar (readProc p tout DM_CONST._READ_BUFFER_SIZE) prompts) (CC.threadDelay tout) >>= \case
         Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
         Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
     Nothing -> do
@@ -266,7 +270,7 @@ genProcCMD :: DM.ProcRunCommandData -> AppContext (IOTask ())
 genProcCMD cmdDat = do
   $logDebugS DM._LOGTAG $ T.pack $ "genProcCMD: called. "
 
-  let tout = DM._TIMEOUT_MICROSEC
+  tout <- view DM.timeoutMicrosecDomainData <$> lift ask
 
   prompts <- view DM.promptsDomainData <$> lift ask
   resQ <- view DM.responseQueueDomainData <$> lift ask
@@ -308,7 +312,7 @@ genProcCMDTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errH
       hFlush wHdl
 
   STM.atomically (STM.readTMVar procVar) >>= \case
-    Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+    Just p -> race (DM.expect lockTMVar (readProc p tout DM_CONST._READ_BUFFER_SIZE) prompts) (CC.threadDelay tout) >>= \case
       Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
       Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
     Nothing -> do
@@ -331,7 +335,7 @@ genProcPS :: DM.ProcRunCommandData -> AppContext (IOTask ())
 genProcPS cmdDat = do
   $logDebugS DM._LOGTAG $ T.pack $ "genProcPS: called. "
 
-  let tout = DM._TIMEOUT_MICROSEC
+  tout <- view DM.timeoutMicrosecDomainData <$> lift ask
 
   prompts <- view DM.promptsDomainData <$> lift ask
   resQ <- view DM.responseQueueDomainData <$> lift ask
@@ -361,7 +365,7 @@ genProcPSTask cmdDat resQ procVar lockTMVar prompts tout = flip E.catchAny errHd
     Nothing -> runProc procVar "powershell" ["-NoLogo", "-NoExit", "-Command", initCmd] env
 
   STM.atomically (STM.readTMVar procVar) >>= \case
-    Just p -> race (DM.expect lockTMVar (readProc p) prompts) (CC.threadDelay tout) >>= \case
+    Just p -> race (DM.expect lockTMVar (readProc p tout DM_CONST._READ_BUFFER_SIZE) prompts) (CC.threadDelay tout) >>= \case
       Left res -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) ExitSuccess (maybe "Nothing" id res) ""
       Right _  -> toolsCallResponse resQ (cmdDat^.DM.jsonrpcProcRunCommandData) (ExitFailure 1) "" "timeout occurred."
     Nothing -> do
@@ -430,11 +434,14 @@ genProcReadTask :: DM.ProcReadCommandData -> AppContext (IOTask ())
 genProcReadTask cmdData = do
   resQ <- view DM.responseQueueDomainData <$> lift ask
   procTMVar <- view processAppData <$> ask
+  tout <- view DM.timeoutMicrosecDomainData <$> lift ask
+
   let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcReadCommandData
   argsDat <- liftEither $ eitherDecode $ argsBS
   let size = argsDat^.argumentsProcIntToolParams
       actualSize = min size DM_CONST._READ_BUFFER_SIZE
-  return $ procReadTask cmdData resQ procTMVar actualSize
+
+  return $ procReadTask cmdData resQ procTMVar tout actualSize
 
 -- |
 --
@@ -442,8 +449,9 @@ procReadTask :: DM.ProcReadCommandData
              -> STM.TQueue DM.McpResponse
              -> STM.TMVar (Maybe ProcData)
              -> Int
+             -> Int
              -> IOTask ()
-procReadTask cmdDat resQ procTMVar actualSize = flip E.catchAny errHdl $ do
+procReadTask cmdDat resQ procTMVar tout actualSize = flip E.catchAny errHdl $ do
   hPutStrLn stderr $ "[INFO] PMS.Infra.ProcSpawn.DS.Core.procReadTask run. actualSize: " ++ show actualSize
   
   STM.atomically (STM.readTMVar procTMVar) >>= \case
@@ -451,14 +459,9 @@ procReadTask cmdDat resQ procTMVar actualSize = flip E.catchAny errHdl $ do
       hPutStrLn stderr "[ERROR] PMS.Infra.ProcSpawn.DS.Core.procReadTask: process is not started."
       toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "process is not started."
     Just p -> do
-      let rHdl = p^.rHdlProcData
-      
-      ready <- hReady rHdl
-      if ready
-        then do
-          out <- BS.hGetSome rHdl actualSize
-          toolsCallResponse resQ jsonRpc ExitSuccess (BS8.unpack out) ""
-        else toolsCallResponse resQ jsonRpc ExitSuccess "" ""
+      output <- readProc p tout actualSize 
+      let result = T.unpack $ ANSI.stripAnsiEscapeCodes $ TE.decodeUtf8With TEE.lenientDecode output
+      toolsCallResponse resQ jsonRpc ExitSuccess result ""
 
   where
     jsonRpc = cmdDat^.DM.jsonrpcProcReadCommandData
@@ -509,7 +512,7 @@ procWriteTask cmdDat resQ procTMVar args invalidChars invalidCmds = flip E.catch
 genProcMessageTask :: DM.ProcMessageCommandData -> AppContext (IOTask ())
 genProcMessageTask cmdData = do
   let argsBS = DM.unRawJsonByteString $ cmdData^.DM.argumentsProcMessageCommandData
-      tout = 30 * 1000 * 1000
+  tout <- view DM.timeoutMicrosecDomainData <$> lift ask
   prompts <- view DM.promptsDomainData <$> lift ask
   resQ <- view DM.responseQueueDomainData <$> lift ask
   invalidChars <- view DM.invalidCharsDomainData <$> lift ask
@@ -564,6 +567,6 @@ procMessageTask cmdDat resQ procTMVar lockTMVar args prompts tout invalidChars i
       BS.hPut wHdl cmd
       hFlush wHdl
 
-      race (DM.expect lockTMVar (readProc pDat) prompts) (CC.threadDelay tout) >>= \case
+      race (DM.expect lockTMVar (readProc pDat tout DM_CONST._READ_BUFFER_SIZE) prompts) (CC.threadDelay tout) >>= \case
         Left res -> toolsCallResponse resQ jsonRpc ExitSuccess (maybe "expect running. skip." id res) ""
         Right _  -> toolsCallResponse resQ jsonRpc (ExitFailure 1) "" "timeout occurred."
